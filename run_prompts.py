@@ -18,7 +18,9 @@ DISPLAY = ":1"
 BASE = "http://localhost:3000"
 # Real X-screen coordinates (calibrated) for the prompt textarea center.
 TEXTAREA = (945, 353)
-PER_PROMPT_TIMEOUT = 300  # seconds to wait for each completion
+# Each uncapped "build a complete implementation" prompt generates ~7-8k tokens
+# and holds an API concurrency slot for minutes, so allow plenty of time.
+PER_PROMPT_TIMEOUT = 600  # seconds to wait for each completion
 ENV = {**os.environ, "DISPLAY": DISPLAY}
 
 
@@ -93,27 +95,29 @@ def main():
             baseline = completed
         target = baseline + 1
 
+        # Send exactly once and wait for it to fully complete. Never re-send
+        # while a request may still be in flight (that would stack requests and
+        # blow the 5-slot concurrency budget).
+        paste_and_send(wid, prompt)
         sent_ok = False
-        for attempt in (1, 2):
-            paste_and_send(wid, prompt)
-            deadline = time.time() + PER_PROMPT_TIMEOUT
-            while time.time() < deadline:
-                c = get_count()
-                if c is not None and c >= target:
-                    sent_ok = True
-                    break
-                time.sleep(1.0)
-            if sent_ok:
+        deadline = time.time() + PER_PROMPT_TIMEOUT
+        while time.time() < deadline:
+            c = get_count()
+            if c is not None and c >= target:
+                sent_ok = True
                 break
-            print(f"  (prompt {i} attempt {attempt} timed out, retrying)", flush=True)
+            time.sleep(1.0)
 
         if sent_ok:
             completed += 1
             # brief beat so the green banner is clearly visible live
-            time.sleep(0.6)
+            time.sleep(2.0)
             print(f"done {i}/{total}", flush=True)
         else:
-            print(f"FAILED {i}/{total} (no completion after retries)", flush=True)
+            print(f"TIMEOUT {i}/{total} (no completion within "
+                  f"{PER_PROMPT_TIMEOUT}s; not re-sending)", flush=True)
+            # give any in-flight request room to drain before next prompt
+            time.sleep(10.0)
 
     # final totals
     try:
